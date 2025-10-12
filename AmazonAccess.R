@@ -10,6 +10,9 @@ test <- vroom("test.csv")
 train <- vroom("train.csv")
 summary(train)
 
+train <- train |>
+  mutate(ACTION = as.factor(ACTION))
+
 
 ggplot(train, aes(factor(ACTION))) +
   geom_bar(fill = "steelblue") +
@@ -26,3 +29,23 @@ my_recipe <- recipe(ACTION ~ ., data = train) |>
 prep_rec <- prep(my_recipe)
 baked_data <- bake(prep_rec, new_data = train)
 cat(ncol(baked_data))
+
+logRegModel <- logistic_reg() |>
+  set_engine("glm")
+
+logReg_workflow <- workflow() |>
+  add_model(logRegModel) |>
+  add_recipe(my_recipe)
+
+logReg_fit <- fit(logReg_workflow, data = train)
+
+amazon_predictions <- predict(logReg_fit,
+                              new_data=test,
+                              type="prob")
+kaggle_submission <- test|>
+  bind_cols(amazon_predictions)|>
+  select(id, .pred_1) |>
+  rename(Action=.pred_1) |>
+  rename(Id=id)
+
+vroom_write(x=kaggle_submission, file="./AmazonPreds.csv", delim=",")
