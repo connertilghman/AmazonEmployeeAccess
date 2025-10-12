@@ -53,6 +53,7 @@ amazon_workflow <- workflow() |>
 tuning_grid <- grid_regular(penalty(),
                             mixture(),
                             levels = 5) 
+
 folds <- vfold_cv(train, v = 10, repeats=1)
 
 CV_results <- amazon_workflow |>
@@ -70,9 +71,9 @@ final_wf <- amazon_workflow |>
 penalized_preds <- predict(final_wf, new_data = test, type="prob")
 
 kaggle_submission <- test|>
-  bind_cols(amazon_predictions)|>
+  bind_cols(penalized_preds)|>
   select(id, .pred_1) |>
   rename(Action=.pred_1) |>
   rename(Id=id)
 
-vroom_write(x=kaggle_submission, file="./AmazonPreds.csv", delim=",")
+vroom_write(x=kaggle_submission, file="./PenalizedPreds.csv", delim=",")
