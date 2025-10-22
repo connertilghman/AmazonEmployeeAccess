@@ -2,8 +2,8 @@ library(tidyverse)
 library(tidymodels)
 library(vroom)
 library(patchwork)
+library(doParallel)
 library(dplyr)
-library(DataExplorer)
 library(glmnet)
 sample <- vroom("sampleSubmission.csv")
 test <- vroom("test.csv")
@@ -46,13 +46,26 @@ cat(ncol(baked_data))
 my_mod <- logistic_reg(mixture=tune(), penalty=tune()) |>
   set_engine("glmnet")
 
+forest_mod <- rand_forest(mtry = tune(),
+                      min_n=tune(),
+                      trees=500) |>
+  set_engine("ranger") |>
+  set_mode("classification")
+
+n_cores <- parallel::detectCores() - 1  
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+knn_mod <- nearest_neighbor(
+  neighbors = tune()) |>
+  set_mode("classification") |>
+  set_engine("kknn")
+
 amazon_workflow <- workflow() |>
   add_recipe(my_recipe) |>
-  add_model(my_mod)
+  add_model(knn_mod)
 
-tuning_grid <- grid_regular(penalty(),
-                            mixture(),
-                            levels = 5) 
+tuning_grid <- grid_regular(neighbors(range = c(1, 25)), levels = 10)
 
 folds <- vfold_cv(train, v = 10, repeats=1)
 
@@ -68,12 +81,16 @@ final_wf <- amazon_workflow |>
   finalize_workflow(bestTune) |>
   fit(data=train)
 
-penalized_preds <- predict(final_wf, new_data = test, type="prob")
+knn_preds <- predict(final_wf, new_data = test, type="prob")
 
 kaggle_submission <- test|>
-  bind_cols(penalized_preds)|>
+  bind_cols(knn_preds)|>
   select(id, .pred_1) |>
   rename(Action=.pred_1) |>
   rename(Id=id)
 
-vroom_write(x=kaggle_submission, file="./PenalizedPreds.csv", delim=",")
+vroom_write(x=kaggle_submission, file="./KNNPreds.csv", delim=",")
+
+stopCluster(cl)
+registerDoSEQ()
+
