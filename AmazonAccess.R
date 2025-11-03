@@ -1,14 +1,17 @@
 library(tidyverse)
-library(tidymodels)
-library(vroom)
 library(patchwork)
-library(doParallel)
-library(dplyr)
-library(glmnet)
+library(tidymodels)
+library(embed)
+library(vroom)
+library(discrim)
+library(kernlab)
+library(themis)
+
 sample <- vroom("sampleSubmission.csv")
 test <- vroom("test.csv")
 train <- vroom("train.csv")
 summary(train)
+
 
 train <- train |>
   mutate(ACTION = as.factor(ACTION))
@@ -23,8 +26,12 @@ train <- train |>
 
 my_recipe <- recipe(ACTION ~ ., data = train) |>
   step_mutate_at(all_numeric_predictors(), fn = factor) |>
-  step_other(all_nominal_predictors(), threshold = 0.001) |>
-  step_dummy(all_nominal_predictors())
+  #step_other(all_nominal_predictors(), threshold = .001) %>% 
+  # combines categorical values that occur
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(ACTION)) |>
+  step_normalize(all_predictors()) #target encoding
+  #step_pca(all_predictors(), threshold=.9) #Threshold is between 0 and 1
+# step_smote(all_outcomes(), neighbors=5)
 
 prep_rec <- prep(my_recipe)
 baked_data <- bake(prep_rec, new_data = train)
@@ -43,36 +50,62 @@ cat(ncol(baked_data))
 #                               new_data=test,
 #                               type="prob")
 
-my_mod <- logistic_reg(mixture=tune(), penalty=tune()) |>
-  set_engine("glmnet")
+# my_mod <- logistic_reg(mixture=tune(), penalty=tune()) |>
+#   set_engine("glmnet")
 
 forest_mod <- rand_forest(mtry = tune(),
                       min_n=tune(),
-                      trees=500) |>
+                      trees=1000) |>
   set_engine("ranger") |>
   set_mode("classification")
 
-n_cores <- parallel::detectCores() - 1  
+n_cores <- parallel::detectCores() - 1
 cl <- makeCluster(n_cores)
 registerDoParallel(cl)
 
-knn_mod <- nearest_neighbor(
-  neighbors = tune()) |>
+# knn_mod <- nearest_neighbor(
+#   neighbors = tune()) |>
+#   set_mode("classification") |>
+#   set_engine("kknn")
+# 
+# nb_mod <- naive_Bayes(Laplace=tune(), smoothness=tune()) |>
+#   set_mode("classification") |>
+#   set_engine("naivebayes") 
+# 
+# nn_model <- mlp(hidden_units = tune(),
+#                 epochs = 50 )|>
+#   set_engine("keras") |>
+#   set_mode("classification")
+
+
+svmRadial <- svm_rbf(rbf_sigma=tune(), cost=tune()) |>
   set_mode("classification") |>
-  set_engine("kknn")
+  set_engine("kernlab")
 
 amazon_workflow <- workflow() |>
   add_recipe(my_recipe) |>
-  add_model(knn_mod)
+  add_model(forest_mod)
 
-tuning_grid <- grid_regular(neighbors(range = c(1, 25)), levels = 10)
+tuning_grid <- grid_regular(mtry(range = c(1,9)),
+                            min_n(),
+                            levels=5)
 
-folds <- vfold_cv(train, v = 10, repeats=1)
+folds <- vfold_cv(train, v=10, repeats=1)
 
-CV_results <- amazon_workflow |>
-  tune_grid(resamples=folds,
-          grid=tuning_grid,
-          metrics=metric_set(roc_auc))
+control <- control_grid(save_pred = FALSE, save_workflow = FALSE, verbose = FALSE)
+
+CV_results <- amazon_workflow |> 
+  tune_grid(
+    resamples=folds,
+    grid=tuning_grid,
+    metrics=metric_set(roc_auc),
+    control = control)
+
+
+# graph <- CV_results |> 
+#   collect_metrics() |>
+#   filter(.metric=="accuracy") |>
+#   ggplot(aes(x=hidden_units, y=mean)) + geom_line()
 
 bestTune <- CV_results |>
   select_best(metric = "roc_auc")
@@ -81,15 +114,15 @@ final_wf <- amazon_workflow |>
   finalize_workflow(bestTune) |>
   fit(data=train)
 
-knn_preds <- predict(final_wf, new_data = test, type="prob")
+forest_preds <- predict(final_wf, new_data = test, type="prob")
 
 kaggle_submission <- test|>
-  bind_cols(knn_preds)|>
+  bind_cols(forest_preds)|>
   select(id, .pred_1) |>
   rename(Action=.pred_1) |>
   rename(Id=id)
 
-vroom_write(x=kaggle_submission, file="./KNNPreds.csv", delim=",")
+vroom_write(x=kaggle_submission, file="./NewForestPreds.csv", delim=",")
 
 stopCluster(cl)
 registerDoSEQ()
